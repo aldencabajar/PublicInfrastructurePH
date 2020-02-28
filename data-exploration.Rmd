@@ -1,0 +1,492 @@
+---
+title: "EPLC data-preprocessing"
+output: 
+    html_notebook:
+      toc: yes
+      theme: simplex
+      toc_float: true
+      
+---
+
+```{r setup, include = F}
+library(data.table)
+library(ggplot2)
+library(lubridate)
+library(lme4)
+library(rethinking)
+library(magrittr)
+library(stringr)
+
+knitr::opts_chunk$set(fig.width = 6, fig.height = 4)
+```
+
+I pre-process here EPLC data from 2014 and 2015. 
+
+## Data Summaries and Structure
+
+```{r data preprocessing}
+eplc2014 <- fread("eplcproj2014.csv", encoding = "UTF-8")
+eplc2015 <- fread("eplcproj2015.csv", encoding = "UTF-8")
+eplcbind <- unique(rbindlist(list(eplc2014, eplc2015)))
+
+## transforming the location variables to lower case
+
+head(eplcbind, 100)
+
+```
+
+```{r}
+summary(eplcbind)
+str(eplcbind)
+```
+
+Add column for total project duration, which is derived from subtracting the actual completion dates to the actual start dates:
+
+```{r calculate actual start and completion dates}
+month_conv = function(int) {
+  ifelse(int/10 < 1, paste(0, int, sep = ''), as.character(int))
+}
+
+eplcbind[,actual_start_date := paste(actual_start_year, month_conv(actual_start_month), 
+                                     '01',sep = '')]
+eplcbind[,actual_start_date:=ymd(actual_start_date)]
+eplcbind[,actual_completion_date := paste(actual_completion_year, month_conv(actual_completion_month), 
+                                     '01',sep = '')]
+eplcbind[,actual_completion_date:=ymd(actual_completion_date)]
+eplcbind[,project_duration := floor(as.integer(actual_completion_date - actual_start_date)/30)]
+head(eplcbind[,.(actual_start_date, actual_completion_date, project_duration)])
+```
+
+Project duration is in months.
+```{r}
+summary(eplcbind[,.(project_duration)])
+```
+
+I also converted the contract start time to date format, and derived a variable `lag_time` which is the duration between the start of contract and the actual start time.
+
+```{r}
+eplcbind[,contract_start_date_ymd := as_date(mdy_hm(contract_start_date))]
+eplcbind[,lag_time:=actual_start_date - contract_start_date_ymd]
+head(eplcbind[,.(contract_start_date_ymd, actual_start_date, contract_start_date_ymd, lag_time)])
+
+```
+
+Shown below, lag time are negative values which means that this could be just related to the actual start date.
+
+```{r}
+summary(eplcbind[,.(as.integer(lag_time))])
+```
+
+## Deduplicating rows
+
+There is significant duplication of entries in the row binded data frames for eplc 2014 to 2015. 
+
+```{r}
+eplcbind[,cnt:=.N, project_id][cnt > 1][order(project_id)]
+```
+
+A simple omission of missing values made the rows distinct from each other according to the project_ids:
+
+```{r}
+eplc_dedup <- na.omit(eplcbind)
+
+nrow(eplc_dedup) == eplc_dedup[,uniqueN(project_id)]
+```
+
+## Project cost exploration
+
+```{r}
+ggplot(eplc_dedup, aes(project_cost)) +
+  geom_histogram(bins = 30)  +
+  scale_x_continuous(limits = c(0, 10000)) +
+  theme_bw()
+```
+
+```{r}
+ggplot(eplc_dedup, aes(log(project_cost + 1))) +
+         geom_histogram(bins = 50) +
+  scale_x_continuous(limits = c(2.5,15)) +
+  theme_bw()
+```
+
+
+Shown below is a histogram of the project cost with increased granularity (bins = 1000). A lot of peaks can be seen with increasing project cost.
+
+```{r}
+ggplot(eplc_dedup, aes(project_cost)) +
+  geom_histogram(bins = 500) +
+  scale_x_continuous(limits = c(0, 10000)) +
+  theme_bw()
+```
+
+Not much to be said about the plot below, when we use the raw project cost.
+
+```{r}
+## Relating project cost and total project duration
+ggplot(eplc_dedup, aes(x = project_duration, y = project_cost))+
+ geom_point(alpha = 0.1) +
+ scale_x_continuous(limits = c(0,25)) +
+  scale_y_continuous(breaks = seq(0, 5e6, by = 3e5)) +
+  theme_bw()
+```
+
+
+taking the log of the project cost gives a more discernible pattern compared to just using the raw value as shown below.
+```{r}
+ggplot(eplc_dedup[!is.na(project_duration)], aes(y = log(project_cost + 1), x = project_duration))+ 
+  geom_point( alpha = 0.1) +
+  geom_smooth( method = 'lm', formula = y ~ x) +
+  theme_bw() +
+  scale_x_continuous(limits = c(0,24), breaks = seq(0, 24, by = 2)) +
+  labs(x = "project duration in months", y = "log project cost") +
+  ggtitle("log project cost vs project duration")
+```
+
+## Exploration on Funding source type
+
+There are a total of 153 types of funding sources.
+
+```{r}
+eplc_dedup[,.N, by=fs_type] %>%
+  ggplot(aes(N)) +
+  geom_histogram(bins = 100) + 
+  theme_bw() +
+  labs(x = "Counts by fs type") + 
+  scale_x_continuous(breaks = seq(0,16000, by = 1000)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+Plotting the median costs by funding source, it can be observed that there is considerable variation across funding sources. 
+
+```{r}
+eplc_dedup[,.(median_cost = median(project_cost, na.rm = T), 
+            count = .N), by=fs_type] %>% 
+  .[order(-median_cost)] %>%
+  ggplot(aes(x= median_cost)) +
+  geom_histogram(bins = 50 ) +
+  theme_bw() +
+  ggtitle("Median costs histogram of funding source types") +
+  labs(x = 'median cost')
+```
+
+
+
+
+```{r}
+eplc_dedup[,log_project_cost := log(project_cost + 1)]
+data_mm <- na.omit(eplc_dedup[,.(log_project_cost, fs_type, project_id)])
+mm_fs_type <- lmer(log_project_cost ~ (1|fs_type), data = data_mm)
+
+data_mm[,log_project_cost_est := predict(mm_fs_type)]
+data_mm[,project_cost_est := exp(log_project_cost_est) + 1] 
+
+fstypeCostEstimation <- 
+unique(data_mm[,.(project_cost_est, fs_type)]) %>%
+  .[order(-fs_type)] %>%
+  .[
+    eplc_dedup[,.(
+        project_cost_mean_emp = mean(project_cost, na.rm = T),
+        count = .N
+        ), 
+      by = fs_type
+      ],
+    nomatch = 0, 
+    on = 'fs_type'] %>%
+  .[order(-project_cost_est)]
+
+fstypeCostEstimation
+
+```
+
+```{r}
+ggplot(fstypeCostEstimation, aes(x=project_cost_est)) +
+  geom_histogram(bins = 50) 
+```
+
+
+
+
+
+## Exploration on location columns
+
+We explore here the columns `project_description`, `project_location` and `implementing_office` 
+
+```{r}
+eplc_dedup[,lapply(.SD, uniqueN), .SDcols = c("project_location", "implementing_office", "project_description")]
+```
+
+Let's start first with the smallest number of distinct values `implement_office`
+```{r}
+eplc_dedup[,.N, implementing_office]
+```
+
+
+```{r}
+eplcbind[,.N, project_location]
+```
+
+
+
+## Exploration by region population
+
+We need to join first the corresponding population data for the different regions. This population data was scraped from psa.gov.ph. 
+
+```{r}
+PopnPerGovUnit <- readRDS("Population_per_gov_unit.RDS") 
+
+#Transform string variables into lower case
+StringVars <- c("Region", "Province", "City_Municipality", "location")
+PopnPerGovUnit[,c(StringVars):=lapply(.SD, str_to_lower),.SDcols = eval(StringVars)]
+PopnPerGovUnit[,locOriginal:= location]
+
+# Remove words inside parenthesis
+PopnPerGovUnit[,location := str_replace_all(location, "\\(.*\\)", "")]
+
+# changing some instances of "city of" into just "<name> city, retain the island garden city of Samal and Science city of Muñoz as these are legitimate names"
+PopnPerGovUnit[!str_detect(location,"island garden|science city"), 
+               location:= str_replace_all(location, "city of (.*)$", "\\1 city")] 
+
+# remove numbers in City and municipal names
+PopnPerGovUnit[level == "City_Municipality", location := str_replace_all(location, "\\d|\\d\\s$", "")]
+
+# remove punctuation marks
+PopnPerGovUnit[,location := str_replace_all(location, "[[:punct:]]", "")]
+PopnPerGovUnit[,location := str_replace_all(location, "^\\s|\\s+$", "")]
+
+
+```
+
+
+```{r}
+unique(PopnPerGovUnit[,.(location)])
+```
+
+
+For the uppermost level of locations, which is not necessarily a Region/Province, I removed the string "district engineering office" and also removed the ordinal numbers. Other location vars such as project_description and project_location are transformed to lower cases.
+
+```{r}
+eplc_dedup <- na.omit(eplcbind)
+locVars <- c("implementing_office", "project_location", "project_description")
+eplc_dedup[,c(locVars) := lapply(.SD, str_to_lower), .SDcols = eval(locVars)]
+eplc_dedup[,implementing_office:=str_to_lower(implementing_office)]
+eplc_dedup[,UpperLevel:=str_replace_all(implementing_office, "district engineering office", "") %>%
+           str_replace_all("\\s+\\d{1}\\w+", "") %>%
+           str_replace_all("\\s+$", "")]
+
+# changing some location strings to more relevant ones
+eplc_dedup[UpperLevel == "mt.province", UpperLevel := "mountain province"]
+eplc_dedup[UpperLevel == "mt.province", UpperLevel := "mountain province"]
+
+# remove punctations in project_location
+eplc_dedup[,project_location := str_replace_all(project_location,"\\(.*\\)", " ") %>%
+             str_replace_all("^\\s+|\\s+$", "") %>%
+             str_replace("-", " ") %>%
+             str_replace("[[:punct:]]", "")]
+
+# fix ñ characters
+eplc_dedup[str_detect(project_location ,"\\\x96"), project_location := str_replace_all(project_location, "\\\x96", "ñ")]
+```
+
+
+```{r}
+unique(eplc_dedup[,.(project_location)])
+```
+
+
+At this point, I devise an algorithm to sequentially pinpoint the location, and attaching finally the population for a certain project_location:
+
+The method goes like this:
++ search the corresponding region/city/province in the `implementing_office` column
++ From the found region/city/province, narrow the search and find the corresponding city if a province was found,
+province if a region was found, and barangay if a city was found. This was then matched with the `project_location` column
+
+```{r}
+FindLoc = function(UpperLevel, project_location, project_description, pop_df) {
+ 
+  project_location <- eplc_dedup$project_location
+  pop_df <- PopnPerGovUnit
+  project_description <- eplc_dedup$project_description
+  UpperLevel <- eplc_dedup$UpperLevel 
+  
+  
+  # determine the location from project_location
+  projectLocUnique <- unique(project_location)
+  loc <- pop_df$location
+  FromProjLoc <- lapply(projectLocUnique, function(x) str_which(loc, paste0("\\b",x, "\\b")))
+  FromProjLocDf <- data.table(project_location = projectLocUnique, FromProjLoc = FromProjLoc)
+  df <- data.table(UpperLevel = UpperLevel, project_location = project_location, project_description = project_description)
+  df[FromProjLocDf, Cnd := i.FromProjLoc, on = "project_location" ]
+  
+ DetectBestLoc = function(Cnd, UpperLevel, pop_df)  {
+  # Using candidate indices, find the most appropriate location by matching with the relevant Province, Region or 
+   # City/Municipality in the implementing office section
+   
+   Cnd <- df[18683,4]
+   UpperLevel <- df[18683,][["UpperLevel"]]
+   
+    Cnd <- unlist(Cnd) 
+    
+    if (length(Cnd) == 0) {
+      # if length of candidates is 0, go directly to searching UpperLevel
+      
+     RelevantData <- pop_df[
+       str_detect(location,paste0("\\b",UpperLevel,"\\b")) & 
+         level %in% c("City_Municipality", "Province", "Region"),
+       .(Province, Region, City_Municipality, location, population)
+       ] 
+     
+     # if regular expressions give multiple matches, try doing an exact match
+     if (nrow(RelevantData) > 1) {
+       RelevantData <- RelevantData[location == UpperLevel]
+     }
+     
+     Loc <- RelevantData[,-5]
+     BestMatchIndex <- 1
+        
+    }
+    
+   if (length(Cnd) > 0)  {
+     
+      RelevantData <- pop_df[Cnd,][,.(Region, Province, City_Municipality, location, population)]
+      
+      if (length(Cnd) == 1) {
+       # if Cnd is equal to 1, it is most probable that it has only one match in the population df, and it is assumed
+       # that it is reasonable to directly query its corresponding tuple (Province, Region, City_Municipality, Barangay)
+        Loc <- RelevantData[,1:4]
+        
+      } else { 
+      
+      BestMatchIndex <- 
+      lapply(RelevantData[,.(Province, Region, City_Municipality)], function(x) str_detect(x, UpperLevel)) %>%
+        as.data.table() %>%
+        .[,sum_bool := apply(.SD, 1, sum, na.rm = T)] %>%
+        .[["sum_bool"]] %>%
+        which.max()
+    
+       Loc <- RelevantData[BestMatchIndex,1:4]
+       
+      }
+   }
+    NACols <- which(unname(sapply(Loc, is.na, USE.NAMES =  F))) 
+     # removing null columns and relabeling the columns by hierarchy
+    if (length(NACols) != 0) {
+      Loc[,(NACols) := NULL]
+     Loc[,(paste0("V", 1:length(NACols))):=NA]
+     setnames(Loc, colnames(Loc), c("Region", "Province", "City_Municipality", "Barangay"))
+    }
+     
+     # Attaching the population col
+     return(cbind(Loc, RelevantData[BestMatchIndex, 5]))
+ 
+  
+   
+ }
+ 
+ for (i in 12935:nrow(df)) {
+ df[i,BestLocation := list(mapply(function(x,y) DetectBestLoc(x,y ,pop_df), Cnd, UpperLevel, SIMPLIFY = F))]
+   
+ }
+ 
+ 
+ 
+ df[i,]
+ 
+ 
+ DetectBestLoc(df[1,4],df[1,1], pop_df)
+ return(df$BestLocation)
+  
+  
+}
+
+eplc_dedup[1, BestLoc := FindLoc(UpperLevel, project_location, project_description, PopnPerGovUnit)]
+
+eplc_dedup[str_detect(project_location,"city of")]
+
+d <-
+eplc_dedup[, .(project_id, project_location, project_description, location = UpperLevel)] %>%
+  .[
+  PopnPerGovUnit[level %in% c("City_Municipality", "Province"),.(location, level)],
+  on = "location",
+  allow.cartesian = T
+  
+]
+
+
+str_detect("city of cebu capital", "(?=.*\\bcebu\\b)(?=.*?\\bcity\\b).*")
+
+```
+
+
+```{r}
+d
+d[,cnt :=.N, project_id]
+d[cnt > 1][order(project_id)] %>%
+  .[,.(loc = unique(location))]
+```
+
+
+There seems to be some duplication with the places number of rows equal to `r nrow(PopnPerGovUnit)` while number of unique values equal to `r PopnPerGovUnit[,uniqueN(location)]`
+
+```{r}
+PopnPerGovUnit[,cnt:=.N, character] %>%
+  .[cnt >1]
+```
+
+
+```{r}
+PopnPerGovUnit[character == 'ilian']
+```
+
+
+Most of the duplications come from the brgy level
+
+```{r}
+PopnPerGovUnit[cnt > 1, .N, level]
+```
+
+
+
+Let us try doing a naive join between the location names in `eplcbind` and in `PopnPerGovUnit`:
+
+```{r}
+PopnPerGovUnit[,character:=stringi::stri_trans_tolower(character)]
+```
+
+```{r}
+eplcbind[,project_location := stringi::stri_trans_tolower(project_location)]
+
+setkey(eplcbind, project_location)
+setkey(PopnPerGovUnit, character)
+PopnPerGovUnit[eplcbind, ]
+
+Eplcbind_w_Pop <- merge(PopnPerGovUnit, eplcbind, by.x = "character", 
+                        by.y ="project_location", all.x=T)
+Eplcbind_w_Pop
+```
+
+
+
+
+```{r, eval = F}
+data_gamma <- na.omit(eplcbind[project_cost >0,.(project_cost, fs_type)])
+data_gamma[,fs_type := as.factor(fs_type)]
+data_gamma[,log_project_cost := log(project_cost)]
+dt <- as.data.frame(data_gamma)
+mdl <- map2stan(
+  alist(
+       log(mu) <- a_fs_type[fs_type],
+      project_cost ~ dgamma2(mu, scale),
+      # rate <- shape/exp(log_mu),
+      a_fs_type[fs_type] ~ dnorm(a, sigma),
+      a ~ dnorm(0,1),
+      sigma ~ dcauchy(0,1),
+      scale ~ dexp(2)
+  ),
+  data = dt,
+  start = list(sigma = 3),
+  constraints=list(sigma="lower=0", scale = "lower=1")
+ 
+)
+```
