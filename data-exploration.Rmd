@@ -54,6 +54,7 @@ eplcbind[,actual_completion_date := paste(actual_completion_year, month_conv(act
                                      '01',sep = '')]
 eplcbind[,actual_completion_date:=ymd(actual_completion_date)]
 eplcbind[,project_duration := floor(as.integer(actual_completion_date - actual_start_date)/30)]
+eplcbind[,project_duration_dy := as.integer(actual_completion_date - actual_start_date)]
 head(eplcbind[,.(actual_start_date, actual_completion_date, project_duration)])
 ```
 
@@ -132,13 +133,16 @@ ggplot(eplc_dedup, aes(x = project_duration, y = project_cost))+
 
 
 taking the log of the project cost gives a more discernible pattern compared to just using the raw value as shown below.
-```{r}
-ggplot(eplc_dedup[!is.na(project_duration)], aes(y = log(project_cost + 1), x = project_duration))+ 
-  geom_point( alpha = 0.1) +
-  geom_smooth( method = 'lm', formula = y ~ x) +
-  theme_bw() +
+```{r, warning=F, message = F}
+ggplot(eplc_dedup[!is.na(project_duration)], aes(y = log(project_cost + 10), x = project_duration)) + 
+  # geom_point( color = "dodgerblue4", alpha = 0.05 , shape = 1, position = "jitter", width = 0.05, 
+  #             height = 0.05) + 
+  geom_jitter(width = .5, height = .1 , color = "dodgerblue4", alpha = 0.05) +
+  geom_smooth(formula = y ~ x, color = "tomato1", se  =F) +
+  theme_minimal() +
   scale_x_continuous(limits = c(0,24), breaks = seq(0, 24, by = 2)) +
-  labs(x = "project duration in months", y = "log project cost") +
+  scale_y_continuous(limits = c(0, 15), breaks = seq(0,15, by = 3)) + 
+ labs(x = "project duration in months", y = "log project cost") +
   ggtitle("log project cost vs project duration")
 ```
 
@@ -149,11 +153,8 @@ There are a total of 153 types of funding sources.
 ```{r}
 eplc_dedup[,.N, by=fs_type] %>%
   ggplot(aes(N)) +
-  geom_histogram(bins = 100) + 
-  theme_bw() +
-  labs(x = "Counts by fs type") + 
-  scale_x_continuous(breaks = seq(0,16000, by = 1000)) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  geom_histogram(bins = 100, fill = "dodgerblue4", alpha =0.6) + 
+  theme_minimal() 
 ```
 
 
@@ -165,14 +166,11 @@ eplc_dedup[,.(median_cost = median(project_cost, na.rm = T),
             count = .N), by=fs_type] %>% 
   .[order(-median_cost)] %>%
   ggplot(aes(x= median_cost)) +
-  geom_histogram(bins = 50 ) +
-  theme_bw() +
+  geom_histogram(bins = 50 , fill = "dodgerblue4", alpha = 0.6) +
+  theme_minimal() + 
   ggtitle("Median costs histogram of funding source types") +
   labs(x = 'median cost')
 ```
-
-
-
 
 ```{r}
 eplc_dedup[,log_project_cost := log(project_cost + 1)]
@@ -244,16 +242,63 @@ PopnPerGovUnit[,locOriginal:= location]
 # Remove words inside parenthesis
 PopnPerGovUnit[,location := str_replace_all(location, "\\(.*\\)", "")]
 
-# changing some instances of "city of" into just "<name> city, retain the island garden city of Samal and Science city of Muñoz as these are legitimate names"
-PopnPerGovUnit[!str_detect(location,"island garden|science city"), 
-               location:= str_replace_all(location, "city of (.*)$", "\\1 city")] 
-
 # remove numbers in City and municipal names
 PopnPerGovUnit[level == "City_Municipality", location := str_replace_all(location, "\\d|\\d\\s$", "")]
 
 # remove punctuation marks
 PopnPerGovUnit[,location := str_replace_all(location, "[[:punct:]]", "")]
-PopnPerGovUnit[,location := str_replace_all(location, "^\\s|\\s+$", "")]
+PopnPerGovUnit[,location := str_replace_all(location, "^\\s|\\s+$", "") %>% 
+                 #remove more than one white space
+                 str_replace_all("\\s{2,}", " ")]
+
+### EDGE CASES ####
+# changing some instances of "city of" into just "<name> city, retain the island garden city of Samal and Science city of Muñoz as these are legitimate names"
+PopnPerGovUnit[!str_detect(location,"island garden|science city"), 
+               location:= str_replace_all(location, "city of (.*)$", "\\1 city")] 
+# Change caraga to region XIII
+PopnPerGovUnit[location == "caraga" & is.na(Region), location := "region xiii"]
+# interchange occidental and oriental in mindoro i.e. instead of occidental mindoro, mindor occidental 
+PopnPerGovUnit[str_detect(location, "[occidental, oriental] mindoro"),
+               location := str_replace_all(location, "(.+) mindoro", "mindoro \\1")]
+
+# Remove provinces in the national capital region 
+PopnPerGovUnit[Region == "national capital region", Province := NA]
+
+# add a District column to accomodate the lack of Provinces in the national capital region
+PopnPerGovUnit[City_Municipality %in% c("tondo", "binondo", "santa cruz", "san nicolas",
+                                        "ermita", "malate", "pandacan", "santa ana",
+                                        "san miguel", "intramuros", "paco", "port area",
+                                        "quiapo") & Region =="national capital region",
+               City_Municipality := "manila"] 
+PopnPerGovUnit[City_Municipality == "manila"]
+
+
+
+# A special is case is Manila, where it is subdivided into corresponding legislative districts. But in this data frame, Manila is subdivided into its geographic districts (Tondo, Binondo, Sta. Cruz etc.) 
+# district 1 brgy 1-146
+PopnPerGovUnit[City_Municipality == "manila" & 
+                 (as.integer(unlist(str_extract(location, "\\d+"))) %in% 1:146) &
+                 level == "barangay", District := "manila district 1"]
+# district 2 147-267
+PopnPerGovUnit[City_Municipality == "manila" & 
+                 (as.integer(unlist(str_extract(location, "\\d+"))) %in% 147:267) &
+                 level == "barangay", District := "manila district 2"]
+# district 3 268-394
+PopnPerGovUnit[City_Municipality == "manila" & 
+                 (as.integer(unlist(str_extract(location, "\\d+"))) %in% 268:394) &
+                 level == "barangay", District := "manila district 3"]
+# district 4 395-586
+PopnPerGovUnit[City_Municipality == "manila" & 
+                 (as.integer(unlist(str_extract(location, "\\d+"))) %in% 395:586) &
+                 level == "barangay", District := "manila district 4"]
+# district 5 649-828
+PopnPerGovUnit[City_Municipality == "manila" & 
+                 (as.integer(unlist(str_extract(location, "\\d+"))) %in% 649:828) &
+                 level == "barangay", District := "manila district 5"]
+# district 6 587-648, 829-905
+PopnPerGovUnit[City_Municipality == "manila" & 
+                 (as.integer(unlist(str_extract(location, "\\d+"))) %in% c(587:648, 829:905)) &
+                 level == "barangay", District := "manila district 6"]
 
 
 ```
@@ -275,23 +320,39 @@ eplc_dedup[,UpperLevel:=str_replace_all(implementing_office, "district engineeri
            str_replace_all("\\s+\\d{1}\\w+", "") %>%
            str_replace_all("\\s+$", "")]
 
+#### EDGE CASES #####
+# fix ñ characters
+eplc_dedup[str_detect(project_location , "\\\x96"),
+           project_location := str_replace_all(project_location, "\\\x96", "ñ")]
 # changing some location strings to more relevant ones
 eplc_dedup[UpperLevel == "mt.province", UpperLevel := "mountain province"]
-eplc_dedup[UpperLevel == "mt.province", UpperLevel := "mountain province"]
+
+# change dinagat island to dinagat islands
+eplc_dedup[UpperLevel == "dinagat island", UpperLevel := "dinagat islands"]
+
+# remove punctuations in region iv upper level
+eplc_dedup[str_detect(UpperLevel, "region iv"),
+           UpperLevel := str_replace_all(UpperLevel,"-", "")]
+
+# change southern mindoro to oriental mindoro
+eplc_dedup[UpperLevel == "southern mindoro", UpperLevel := "mindoro oriental"]
 
 # remove punctations in project_location
 eplc_dedup[,project_location := str_replace_all(project_location,"\\(.*\\)", " ") %>%
              str_replace_all("^\\s+|\\s+$", "") %>%
              str_replace("-", " ") %>%
-             str_replace("[[:punct:]]", "")]
+             str_replace("[[:punct:]]", "") %>% 
+             str_replace("\\s{2,}", "\\s")]
 
-# fix ñ characters
-eplc_dedup[str_detect(project_location ,"\\\x96"), project_location := str_replace_all(project_location, "\\\x96", "ñ")]
+
 ```
 
 
 ```{r}
-unique(eplc_dedup[,.(project_location)])
+unique(eplc_dedup[,.(project_location)]) 
+  
+  
+  
 ```
 
 
@@ -310,32 +371,33 @@ FindLoc = function(UpperLevel, project_location, project_description, pop_df) {
   project_description <- eplc_dedup$project_description
   UpperLevel <- eplc_dedup$UpperLevel 
   
-  
   # determine the location from project_location
   projectLocUnique <- unique(project_location)
   loc <- pop_df$location
-  FromProjLoc <- lapply(projectLocUnique, function(x) str_which(loc, paste0("\\b",x, "\\b")))
-  FromProjLocDf <- data.table(project_location = projectLocUnique, FromProjLoc = FromProjLoc)
-  df <- data.table(UpperLevel = UpperLevel, project_location = project_location, project_description = project_description)
+  FromProjLoc <-
+    lapply(projectLocUnique, function(x)
+    str_which(loc, paste0("\\b", x, "\\b")))
+  FromProjLocDf <- data.table(project_location = projectLocUnique, 
+                              FromProjLoc = FromProjLoc)
+  df <- data.table(UpperLevel = UpperLevel, project_location = project_location, 
+                   project_description = project_description)
   df[FromProjLocDf, Cnd := i.FromProjLoc, on = "project_location" ]
   
+  Cnd <- df[42237, 4]
+  UpperLevel <- df[42237, ][["UpperLevel"]]
+ 
  DetectBestLoc = function(Cnd, UpperLevel, pop_df)  {
   # Using candidate indices, find the most appropriate location by matching with the relevant Province, Region or 
    # City/Municipality in the implementing office section
-   
-   Cnd <- df[18683,4]
-   UpperLevel <- df[18683,][["UpperLevel"]]
    
     Cnd <- unlist(Cnd) 
     
     if (length(Cnd) == 0) {
       # if length of candidates is 0, go directly to searching UpperLevel
       
-     RelevantData <- pop_df[
-       str_detect(location,paste0("\\b",UpperLevel,"\\b")) & 
-         level %in% c("City_Municipality", "Province", "Region"),
-       .(Province, Region, City_Municipality, location, population)
-       ] 
+      RelevantData <- pop_df[str_detect(location, paste0("\\b", UpperLevel, "\\b")) &
+                               level %in% c("City_Municipality", "Province", "Region"),
+                               .(Province, Region, City_Municipality, location, population)] 
      
      # if regular expressions give multiple matches, try doing an exact match
      if (nrow(RelevantData) > 1) {
@@ -348,8 +410,9 @@ FindLoc = function(UpperLevel, project_location, project_description, pop_df) {
     }
     
    if (length(Cnd) > 0)  {
-     
-      RelevantData <- pop_df[Cnd,][,.(Region, Province, City_Municipality, location, population)]
+     RelevantData <-
+       pop_df[Cnd, ] %>%
+       .[, .(Region, Province, City_Municipality, location, population)]
       
       if (length(Cnd) == 1) {
        # if Cnd is equal to 1, it is most probable that it has only one match in the population df, and it is assumed
@@ -359,7 +422,8 @@ FindLoc = function(UpperLevel, project_location, project_description, pop_df) {
       } else { 
       
       BestMatchIndex <- 
-      lapply(RelevantData[,.(Province, Region, City_Municipality)], function(x) str_detect(x, UpperLevel)) %>%
+      lapply(RelevantData[,.(Province, Region, City_Municipality)], 
+             function(x) str_detect(x, UpperLevel)) %>%
         as.data.table() %>%
         .[,sum_bool := apply(.SD, 1, sum, na.rm = T)] %>%
         .[["sum_bool"]] %>%
@@ -369,23 +433,37 @@ FindLoc = function(UpperLevel, project_location, project_description, pop_df) {
        
       }
    }
+    
+    # for edge cases where two locations are indistinguisable such as 
+    #siquijor town and siquijor province, prefer province level hence:
+    if (nrow(Loc) > 1) {
+      Loc <- Loc[is.na(Province)]
+    }
+    
+    #identify null columns for restructuring the necessary information
     NACols <- which(unname(sapply(Loc, is.na, USE.NAMES =  F))) 
+    
      # removing null columns and relabeling the columns by hierarchy
     if (length(NACols) != 0) {
-      Loc[,(NACols) := NULL]
-     Loc[,(paste0("V", 1:length(NACols))):=NA]
-     setnames(Loc, colnames(Loc), c("Region", "Province", "City_Municipality", "Barangay"))
+      Loc[, (NACols) := NULL]
+      Loc[, (paste0("V", 1:length(NACols))) := NA]
+      setnames(Loc, colnames(Loc),
+               c("Region", "Province", 
+                 "City_Municipality", "Barangay"))
     }
-     
+    
      # Attaching the population col
      return(cbind(Loc, RelevantData[BestMatchIndex, 5]))
- 
-  
    
  }
  
- for (i in 12935:nrow(df)) {
- df[i,BestLocation := list(mapply(function(x,y) DetectBestLoc(x,y ,pop_df), Cnd, UpperLevel, SIMPLIFY = F))]
+ for (i in 38634:nrow(df)) {
+   df[i, BestLocation := list(mapply(
+     function(x, y) DetectBestLoc(x, y , pop_df),
+     Cnd,
+     UpperLevel,
+     SIMPLIFY = F
+     ))]
    
  }
  
@@ -414,13 +492,13 @@ eplc_dedup[, .(project_id, project_location, project_description, location = Upp
 ]
 
 
-str_detect("city of cebu capital", "(?=.*\\bcebu\\b)(?=.*?\\bcity\\b).*")
+str_detect("city of cebu capital", "(?=.*\\bcebu\\b)(?=.*?\\bcity\\b).*") 
+  
 
 ```
 
 
 ```{r}
-d
 d[,cnt :=.N, project_id]
 d[cnt > 1][order(project_id)] %>%
   .[,.(loc = unique(location))]
