@@ -1,0 +1,89 @@
+---
+title: "Project cost and project duration exploration"
+output: 
+  html_document:
+    toc: true
+    
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(magrittr)
+library(ggplot2)
+library(kableExtra)
+
+knitr::opts_chunk$set(echo = F, message = F, warning = F, fig.width = 6, fig.height = 4)
+eplc_dedup <- readRDS("eplc_preproc.rds")
+theme_set(theme_minimal())
+```
+
+## Project cost exploration
+
+```{r fig.width = 8, fig.height= 4}
+proj_cost_hist <- 
+ggplot(eplc_dedup, aes(project_cost)) +
+  geom_histogram(bins = 100, alpha = 0.6, fill = "dodgerblue4")  +
+  scale_x_continuous(limits = c(0, 10000), breaks = seq(0, 10000, by = 1000)) +
+  theme(axis.text.x = element_text(size = 8)) + 
+  labs(x = "project cost ($)") + 
+  ggtitle("Project cost histogram")
+
+log_proj_cost_hist <- 
+ggplot(eplc_dedup, aes(log(project_cost + 1))) + 
+  geom_histogram(bins = 100, alpha = 0.6, fill = "dodgerblue4")  +
+  scale_x_continuous(limits = c(2.5,15), breaks = seq(2.5, 15, by = 2.5)) +
+  labs(x = "log project cost ") + 
+  ggtitle("log project cost histogram")
+
+cowplot::plot_grid(proj_cost_hist, log_proj_cost_hist)
+  
+```
+
+<br>
+<br>
+
+
+```{r}
+## Relating project cost and total project duration
+plt <-
+ggplot(eplc_dedup[project_cost <= 5e5], aes(x = factor(project_duration), y = project_cost))+
+  geom_boxplot(alpha = 0.6, fill = "dodgerblue4", color = "gray") +
+  labs(x = "project duration (months)", title = "Project Cost with Increasing Project Duration", y = "Project cost ($)")
+
+dat <- ggplot_build(plt)$data[[1]]
+plt + geom_segment(data =dat, aes(x = xmin, xend = xmax, y = middle, yend = middle),
+                   colour = "white", size = 0.2)
+```
+
+<br>
+<br>
+
+Looking further into this plot, we can see that there are certain projects that are short in duration but have high project costs. Looking into these points it can be seen that there are no characteristics that might make us think that these projects should be appropriated with this cost. 
+
+```{r}
+eplc_dedup[project_cost > 5e5, .(project_id, project_cost, project_description, project_duration)] %>%
+  kable() %>%
+  kable_styling()
+                                
+  
+
+```
+
+<br>
+<br>
+
+taking the log of the project cost gives a more discernible pattern compared to just using the raw value as shown below.
+
+<br>
+
+```{r}
+ggplot(eplc_dedup[!is.na(project_duration)], aes(y = log(project_cost + 10), x = project_duration)) + 
+  # geom_point( color = "dodgerblue4", alpha = 0.05 , shape = 1, position = "jitter", width = 0.05, 
+  #             height = 0.05) + 
+  geom_jitter(width = .5, height = .1 , color = "dodgerblue4", alpha = 0.1) +
+  geom_smooth(formula = y ~ x, color = "tomato1", se  =F) +
+  scale_x_continuous(limits = c(0,24), breaks = seq(0, 24, by = 3)) +
+  scale_y_continuous(limits = c(0, 15), breaks = seq(0,15, by = 3)) + 
+ labs(x = "project duration in months", y = "log project cost") +
+  ggtitle("log project cost with increasing project duration")
+```

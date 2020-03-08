@@ -1,0 +1,148 @@
+---
+title: "Data Structure and pre-processing"
+output: 
+    html_document:
+      toc: yes
+      theme: simplex
+      toc_float: true
+      
+---
+
+```{r setup, include = F}
+library(data.table)
+library(ggplot2)
+library(lubridate)
+library(lme4)
+library(rethinking)
+library(magrittr)
+library(stringr)
+
+knitr::opts_chunk$set(fig.width = 6, fig.height = 4)
+```
+
+I pre-process here EPLC data from 2014 and 2015. 
+
+# Data Summaries and Structure
+
+```{r data preprocessing}
+eplc2014 <- fread("eplcproj2014.csv", encoding = "UTF-8")
+eplc2015 <- fread("eplcproj2015.csv", encoding = "UTF-8")
+eplcbind <- unique(rbindlist(list(eplc2014, eplc2015)))
+
+head(eplcbind)
+
+```
+
+
+Add column for total project duration, which is derived from subtracting the actual completion dates to the actual start dates:
+
+```{r calculate actual start and completion dates}
+month_conv = function(int) {
+  ifelse(int/10 < 1, paste(0, int, sep = ''), as.character(int))
+}
+
+eplcbind[,actual_start_date := paste(actual_start_year, month_conv(actual_start_month), 
+                                     '01',sep = '')]
+eplcbind[,actual_start_date:=ymd(actual_start_date)]
+eplcbind[,actual_completion_date := paste(actual_completion_year, month_conv(actual_completion_month), 
+                                     '01',sep = '')]
+eplcbind[,actual_completion_date:=ymd(actual_completion_date)]
+eplcbind[,project_duration := floor(as.integer(actual_completion_date - actual_start_date)/30)]
+eplcbind[,project_duration_dy := as.integer(actual_completion_date - actual_start_date)]
+head(eplcbind[,.(actual_start_date, actual_completion_date, project_duration)])
+```
+
+Project duration is in months.
+
+I also converted the contract start time to date format, and derived a variable `lag_time` which is the duration between the start of contract and the actual start time.
+
+```{r}
+eplcbind[,contract_start_date_ymd := as_date(mdy_hm(contract_start_date))]
+eplcbind[,lag_time:=actual_start_date - contract_start_date_ymd]
+head(eplcbind[,.(contract_start_date_ymd, actual_start_date, contract_start_date_ymd, lag_time)])
+
+```
+
+Shown below, lag time are negative values which means that this could be just related to the actual start date.
+
+```{r}
+summary(eplcbind[,.(as.integer(lag_time))])
+```
+
+## Deduplicating rows
+
+There is significant duplication of entries in the row binded data frames for eplc 2014 to 2015. 
+
+```{r, echo = T}
+eplcbind[,cnt:=.N, project_id][cnt > 1][order(project_id)] %>%
+  nrow()
+```
+
+A simple omission of missing values made the rows distinct from each other according to the project_ids:
+
+```{r, echo = T}
+eplc_dedup <- na.omit(eplcbind)
+nrow(eplc_dedup) == eplc_dedup[,uniqueN(project_id)]
+```
+
+```{r, include = F}
+saveRDS(eplc_dedup, "eplc_preproc.rds")
+```
+
+
+
+
+## Exploration by region population
+
+We need to join first the corresponding population data for the different regions. This population data was scraped from psa.gov.ph. 
+
+
+
+
+```{r}
+d[,cnt :=.N, project_id]
+d[cnt > 1][order(project_id)] %>%
+  .[,.(loc = unique(location))]
+```
+
+
+There seems to be some duplication with the places number of rows equal to `r nrow(PopnPerGovUnit)` while number of unique values equal to `r PopnPerGovUnit[,uniqueN(location)]`
+
+```{r}
+PopnPerGovUnit[,cnt:=.N, character] %>%
+  .[cnt >1]
+```
+
+
+```{r}
+PopnPerGovUnit[character == 'ilian']
+```
+
+
+Most of the duplications come from the brgy level
+
+```{r}
+PopnPerGovUnit[cnt > 1, .N, level]
+```
+
+
+
+Let us try doing a naive join between the location names in `eplcbind` and in `PopnPerGovUnit`:
+
+```{r}
+PopnPerGovUnit[,character:=stringi::stri_trans_tolower(character)]
+```
+
+```{r}
+eplcbind[,project_location := stringi::stri_trans_tolower(project_location)]
+
+setkey(eplcbind, project_location)
+setkey(PopnPerGovUnit, character)
+PopnPerGovUnit[eplcbind, ]
+
+Eplcbind_w_Pop <- merge(PopnPerGovUnit, eplcbind, by.x = "character", 
+                        by.y ="project_location", all.x=T)
+Eplcbind_w_Pop
+```
+
+

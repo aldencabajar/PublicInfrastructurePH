@@ -1,0 +1,56 @@
+---
+title: "fs-type-proj-loc-explore"
+output: 
+  html_document:
+    toc: true
+  
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(magrittr)
+knitr::opts_chunk$set(echo = F, message = F, warning = F, fig.width = 6, fig.height = 4)
+theme_set(theme_minimal())
+```
+
+```{r include = F}
+eplc_dedup <- readRDS("eplc_preproc.rds")
+```
+
+
+# Funding Source Type
+
+<br>
+
+```{r}
+eplc_dedup[,.(counts = .N), fs_type] %>%
+  ggplot(aes(counts)) +
+  geom_histogram(bins = 100, alpha = 0.6, fill = "dodgerblue4") + 
+  ggtitle("Project counts per funding source type histogram") +
+  scale_x_continuous(breaks = seq(0, 8000, 1000))
+  
+
+
+```
+
+<br>
+<br>
+
+```{r fig.width = 6, fig.height = 10}
+plt <- 
+ggplot(eplc_dedup[project_cost < 5e5], aes(x = fs_type, y = project_cost)) + 
+  geom_boxplot(alpha = 0.6, fill = "dodgerblue4", outlier.size = 0.5, colour = "gray") +
+  theme_classic() + 
+  coord_flip() +
+  theme(axis.ticks.y = element_blank(),
+        axis.text.y = element_text(size = 5))+  
+  labs(x = "funding source type", y = "project cost ($)") +  
+  ggtitle("Project costs with fs type")
+
+dat <- ggplot_build(plt)$data[[1]]
+plt + geom_segment(data =dat, aes(x = xmin, xend = xmax, y = middle, yend = middle),
+                   colour = "white", size = 0.2)
+
+```
+
