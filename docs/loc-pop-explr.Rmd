@@ -3,6 +3,7 @@ title: "Project Cost Exploration on location population"
 output: 
   html_document:
     toc: true
+    toc_float: true
 ---
 
 ```{r setup, include=FALSE}
@@ -10,291 +11,40 @@ library(data.table)
 library(ggplot2)
 library(magrittr)
 knitr::opts_chunk$set(echo = F, message = F, warning = F, fig.width = 6, fig.height = 4)
+knitr::opts_knit$set(root.dir = "../")
 theme_set(theme_minimal())
 ```
 
 ```{r include = F}
-eplc_dedup <- readRDS("eplc_preproc.rds")
-PopnPerGovUnit <- readRDS("Population_per_gov_unit.RDS") 
+eplc_dedup <- readRDS("bin/eplc_preproc.rds")
+PopnPerGovUnit_proc <- readRDS("bin/PopnPerGovUnit-proc.rds")
+# locwpop <- readRDS("bin/eplc-w-pop.rds")
 ```
 
 
-# Associating City/Municipality, Region and Barangay to a project location
+## Associating government units to a project location
 
-I started with the collection of data from psa.gov.ph via web scraping to obtain the necessary population information in all government units ranging from the barangay to the region. This was done in a separate script. After obtaining said information, 
+I started with the collection of data from psa.gov.ph via web scraping to obtain the necessary population information in all government units ranging from the barangay to the region. This was done in a separate script. After obtaining said information, some pre-processing steps were done to ensure that locations are uniform between the scraped and eplc data.
 
-```{r, echo = T}
+Code below was used to pre-process the table for population per government unit: 
 
-#Transform string variables into lower case
-StringVars <- c("Region", "Province", "City_Municipality", "location")
-PopnPerGovUnit[,c(StringVars):=lapply(.SD, str_to_lower),.SDcols = eval(StringVars)]
-PopnPerGovUnit[,locOriginal:= location]
+```{r, code = readLines("../src/PopPerGovUnit_proc.R"), echo = T , eval = F}
+```
 
-# Remove words inside parenthesis
-PopnPerGovUnit[,location := str_replace_all(location, "\\(.*\\)", "")]
-
-# remove numbers in City and municipal names
-PopnPerGovUnit[level == "City_Municipality", location := str_replace_all(location, "\\d|\\d\\s$", "")]
-
-# remove punctuation marks
-PopnPerGovUnit[,location := str_replace_all(location, "[[:punct:]]", "")]
-PopnPerGovUnit[,location := str_replace_all(location, "^\\s|\\s+$", "") %>% 
-                 #remove more than one white space
-                 str_replace_all("\\s{2,}", " ")]
-
-### EDGE CASES ####
-# changing some instances of "city of" into just "<name> city, retain the island garden city of Samal and Science city of Muñoz as these are legitimate names"
-PopnPerGovUnit[!str_detect(location,"island garden|science city"), 
-               location:= str_replace_all(location, "city of (.*)$", "\\1 city")] 
-# Change caraga to region XIII
-PopnPerGovUnit[location == "caraga" & is.na(Region), location := "region xiii"]
-# interchange occidental and oriental in mindoro i.e. instead of occidental mindoro, mindor occidental 
-PopnPerGovUnit[str_detect(location, "[occidental, oriental] mindoro"),
-               location := str_replace_all(location, "(.+) mindoro", "mindoro \\1")]
-
-# Remove provinces in the national capital region 
-PopnPerGovUnit[Region == "national capital region", Province := NA]
-
-# add a District column to accomodate the lack of Provinces in the national capital region
-PopnPerGovUnit[City_Municipality %in% c("tondo", "binondo", "santa cruz", "san nicolas",
-                                        "ermita", "malate", "pandacan", "santa ana",
-                                        "san miguel", "intramuros", "paco", "port area",
-                                        "quiapo") & Region =="national capital region",
-               City_Municipality := "manila"] 
-
-
-
-# A special is case is Manila, where it is subdivided into corresponding legislative districts. But in this data frame, Manila is subdivided into its geographic districts (Tondo, Binondo, Sta. Cruz etc.) 
-# district 1 brgy 1-146
-PopnPerGovUnit[City_Municipality == "manila" & 
-                 (as.integer(unlist(str_extract(location, "\\d+"))) %in% 1:146) &
-                 level == "barangay", District := "manila district 1"]
-# district 2 147-267
-PopnPerGovUnit[City_Municipality == "manila" & 
-                 (as.integer(unlist(str_extract(location, "\\d+"))) %in% 147:267) &
-                 level == "barangay", District := "manila district 2"]
-# district 3 268-394
-PopnPerGovUnit[City_Municipality == "manila" & 
-                 (as.integer(unlist(str_extract(location, "\\d+"))) %in% 268:394) &
-                 level == "barangay", District := "manila district 3"]
-# district 4 395-586
-PopnPerGovUnit[City_Municipality == "manila" & 
-                 (as.integer(unlist(str_extract(location, "\\d+"))) %in% 395:586) &
-                 level == "barangay", District := "manila district 4"]
-# district 5 649-828
-PopnPerGovUnit[City_Municipality == "manila" & 
-                 (as.integer(unlist(str_extract(location, "\\d+"))) %in% 649:828) &
-                 level == "barangay", District := "manila district 5"]
-# district 6 587-648, 829-905
-PopnPerGovUnit[City_Municipality == "manila" & 
-                 (as.integer(unlist(str_extract(location, "\\d+"))) %in% c(587:648, 829:905)) &
-                 level == "barangay", District := "manila district 6"]
-
+While this code snippet was used to further process eplc data location fields: 
+```{r, code = readLines("../src/eplc-loc-proc.R"), echo = T, eval = F}
 
 ```
 
 
+For the uppermost level of locations, which is not necessarily a Region/Province, I removed the string "district engineering office" and also removed the ordinal numbers. Other location vars such as project_description and project_location were transformed to lower cases.
+
+<br>
+
+### determining population where a project is located
+
+At this point, I devise an algorithm to sequentially pinpoint the location, and attaching finally the population for a certain project_location.
 
 
-For the uppermost level of locations, which is not necessarily a Region/Province, I removed the string "district engineering office" and also removed the ordinal numbers. Other location vars such as project_description and project_location are transformed to lower cases.
-
-```{r}
-eplc_dedup <- na.omit(eplcbind)
-locVars <- c("implementing_office", "project_location", "project_description")
-eplc_dedup[,c(locVars) := lapply(.SD, str_to_lower), .SDcols = eval(locVars)]
-eplc_dedup[,implementing_office:=str_to_lower(implementing_office)]
-eplc_dedup[,UpperLevel:=str_replace_all(implementing_office, "district engineering office", "") %>%
-           str_replace_all("\\s+\\d{1}\\w+", "") %>%
-           str_replace_all("\\s+$", "")]
-
-#### EDGE CASES #####
-# fix ñ characters
-eplc_dedup[str_detect(project_location , "\\\x96"),
-           project_location := str_replace_all(project_location, "\\\x96", "ñ")]
-# changing some location strings to more relevant ones
-eplc_dedup[UpperLevel == "mt.province", UpperLevel := "mountain province"]
-
-# change dinagat island to dinagat islands
-eplc_dedup[UpperLevel == "dinagat island", UpperLevel := "dinagat islands"]
-
-# remove punctuations in region iv upper level
-eplc_dedup[str_detect(UpperLevel, "region iv"),
-           UpperLevel := str_replace_all(UpperLevel,"-", "")]
-
-# change southern mindoro to oriental mindoro
-eplc_dedup[UpperLevel == "southern mindoro", UpperLevel := "mindoro oriental"]
-
-# remove punctations in project_location
-eplc_dedup[,project_location := str_replace_all(project_location,"\\(.*\\)", " ") %>%
-             str_replace_all("^\\s+|\\s+$", "") %>%
-             str_replace("-", " ") %>%
-             str_replace("[[:punct:]]", "") %>% 
-             str_replace("\\s{2,}", "\\s")]
-
-
-```
-
-
-```{r}
-unique(eplc_dedup[,.(project_location)]) 
-  
-  
-  
-```
-
-
-At this point, I devise an algorithm to sequentially pinpoint the location, and attaching finally the population for a certain project_location:
-
-The method goes like this:
-+ search the corresponding region/city/province in the `implementing_office` column
-+ From the found region/city/province, narrow the search and find the corresponding city if a province was found,
-province if a region was found, and barangay if a city was found. This was then matched with the `project_location` column
-
-```{r}
-FindLoc = function(UpperLevel, project_location, project_description, pop_df) {
- 
-  project_location <- eplc_dedup$project_location
-  pop_df <- PopnPerGovUnit
-  project_description <- eplc_dedup$project_description
-  UpperLevel <- eplc_dedup$UpperLevel 
-  
-  # determine the location from project_location
-  projectLocUnique <- unique(project_location)
-  loc <- pop_df$location
-  FromProjLoc <-
-    lapply(projectLocUnique, function(x)
-    str_which(loc, paste0("\\b", x, "\\b")))
-  FromProjLocDf <- data.table(project_location = projectLocUnique, 
-                              FromProjLoc = FromProjLoc)
-  df <- data.table(UpperLevel = UpperLevel, project_location = project_location, 
-                   project_description = project_description)
-  df[FromProjLocDf, Cnd := i.FromProjLoc, on = "project_location" ]
-  
-  # Cnd <- df[17, 4]
-  # UpperLevel <- df[17, ][["UpperLevel"]]
- 
- DetectBestLoc = function(Cnd, UpperLevel, pop_df)  {
-  # Using candidate indices, find the most appropriate location by matching with the relevant Province, Region or 
-   # City/Municipality in the implementing office section
-   
-    Cnd <- unlist(Cnd) 
-    
-    if (length(Cnd) == 0) {
-      # if length of candidates is 0, go directly to searching UpperLevel
-      
-      RelevantData <- pop_df[str_detect(location, paste0("\\b", UpperLevel, "\\b")) &
-                               level %in% c("City_Municipality", "Province", "Region"),
-                               .(Province, Region, City_Municipality, location, population)] 
-     
-     # if regular expressions give multiple matches, try doing an exact match
-     if (nrow(RelevantData) > 1) {
-       RelevantData <- RelevantData[location == UpperLevel]
-     }
-     
-     Loc <- RelevantData[,-5]
-     BestMatchIndex <- 1
-        
-    }
-    
-   if (length(Cnd) > 0)  {
-     RelevantData <-
-       pop_df[Cnd, ] %>%
-       .[, .(Region, Province, City_Municipality, location, population)]
-      
-      if (length(Cnd) == 1) {
-       # if Cnd is equal to 1, it is most probable that it has only one match in the population df, and it is assumed
-       # that it is reasonable to directly query its corresponding tuple (Province, Region, City_Municipality, Barangay)
-        Loc <- RelevantData[,1:4]
-        
-      } else { 
-      
-      BestMatchIndex <- 
-      lapply(RelevantData[,.(Province, Region, City_Municipality)], 
-             function(x) str_detect(x, UpperLevel)) %>%
-        as.data.table() %>%
-        .[,sum_bool := apply(.SD, 1, sum, na.rm = T)] %>%
-        .[["sum_bool"]] %>%
-        which.max()
-    
-       Loc <- RelevantData[BestMatchIndex,1:4]
-       
-      }
-   }
-    
-    # for edge cases where two locations are indistinguisable such as 
-    #siquijor town and siquijor province, prefer province level hence:
-    if (nrow(Loc) > 1) {
-      Loc <- Loc[is.na(Province)]
-    }
-    
-    if (nrow(Loc) == 0) {
-      return(data.table(Region = NA, Province = NA, City_Municipality = NA,
-                                          Barangay = NA, population = NA))
-    }
-    #identify null columns for restructuring the necessary information
-    NACols <- which(unname(sapply(Loc, is.na, USE.NAMES =  F))) 
-    
-     # removing null columns and relabeling the columns by hierarchy
-    if (length(NACols) != 0) {
-      Loc[, (NACols) := NULL]
-      Loc[, (paste0("V", 1:length(NACols))) := NA]
-      setnames(Loc, colnames(Loc),
-               c("Region", "Province", 
-                 "City_Municipality", "Barangay"))
-    }
-    
-     # Attaching the population col
-     return(cbind(Loc, RelevantData[BestMatchIndex, 5]))
-   
- }
- 
-   df[, BestLocation := list(mapply(
-     function(x, y) DetectBestLoc(x, y , pop_df),
-     Cnd,
-     UpperLevel,
-     SIMPLIFY = F
-     ))]
-   bestLoc <- df$BestLocation
-   
-   df[,BestLocation := bestLoc]
-   df[cbind(df[,.(project_id)], rbindlist(df$BestLocation)), 
-      ':='(
-        Region = i.Region,
-        Province = i.Province,
-        City_Municipality = i.City_Municpality,
-        Barangay = i.Barangay,
-        population = i.population
-      ), on = "project_id"]
-   df[,BestLocation := NULL]
-   
- }
- 
- 
- 
- d <- cbind(df, rbindlist(df$BestLocation))
- d
- 
- DetectBestLoc(df[1,4],df[1,1], pop_df)
- return(df$BestLocation)
-  
-  
-}
-
-eplc_dedup[1, BestLoc := FindLoc(UpperLevel, project_location, project_description, PopnPerGovUnit)]
-
-eplc_dedup[str_detect(project_location,"city of")]
-
-d <-
-eplc_dedup[, .(project_id, project_location, project_description, location = UpperLevel)] %>%
-  .[
-  PopnPerGovUnit[level %in% c("City_Municipality", "Province"),.(location, level)],
-  on = "location",
-  allow.cartesian = T
-  
-]
-
-
-str_detect("city of cebu capital", "(?=.*\\bcebu\\b)(?=.*?\\bcity\\b).*") 
-  
-
+```{r, code = readLines("../src/find-loc.R"), echo = T , eval = F}
 ```
